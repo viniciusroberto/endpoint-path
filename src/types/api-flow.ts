@@ -22,6 +22,20 @@ export interface CollectionInfo {
 
 export type NodeExecutionStatus = 'idle' | 'running' | 'success' | 'error';
 
+export interface FieldValidation {
+  id: string;
+  fieldPath: string;
+  expectedType: 'string' | 'number' | 'boolean' | 'array' | 'object';
+}
+
+export interface FieldValidationResult {
+  fieldPath: string;
+  expectedType: string;
+  actualType: string;
+  actualValue?: unknown;
+  passed: boolean;
+}
+
 export interface NodeExecutionResult {
   status: NodeExecutionStatus;
   statusCode?: number;
@@ -29,6 +43,12 @@ export interface NodeExecutionResult {
   responseHeaders?: Record<string, string>;
   duration?: number;
   error?: string;
+  statusCodeValidation?: {
+    expected: number[];
+    actual: number;
+    passed: boolean;
+  };
+  fieldValidationResults?: FieldValidationResult[];
 }
 
 export interface DataMapping {
@@ -45,6 +65,8 @@ export interface FlowEdgeData {
 export interface FlowNodeData {
   endpoint: ApiEndpoint;
   executionResult?: NodeExecutionResult;
+  expectedStatusCodes?: number[];
+  fieldValidations?: FieldValidation[];
   overrides?: {
     headers?: Record<string, string>;
     body?: string;
