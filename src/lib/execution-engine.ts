@@ -1,5 +1,5 @@
 import { Node, Edge } from 'reactflow';
-import { FlowNodeData, FlowEdgeData, DataMapping, NodeExecutionResult } from '@/types/api-flow';
+import { FlowNodeData, FlowEdgeData, DataMapping, NodeExecutionResult, FieldValidationResult } from '@/types/api-flow';
 
 function resolveFieldPath(obj: unknown, path: string): unknown {
   const parts = path.split('.');
@@ -37,7 +37,6 @@ function getExecutionOrder(nodes: Node<FlowNodeData>[], edges: Edge<FlowEdgeData
     inDegree[e.target] = (inDegree[e.target] || 0) + 1;
   });
 
-  // Topological sort (Kahn's)
   const queue: string[] = [];
   for (const id of Object.keys(inDegree)) {
     if (inDegree[id] === 0) queue.push(id);
@@ -92,12 +91,32 @@ function applyMappings(
     }
   }
 
-  return {
-    headers,
-    body: JSON.stringify(bodyObj),
-    queryParams,
-    url,
-  };
+  return { headers, body: JSON.stringify(bodyObj), queryParams, url };
+}
+
+function validateFields(responseData: unknown, nodeData: FlowNodeData): FieldValidationResult[] {
+  const validations = nodeData.fieldValidations;
+  if (!validations || validations.length === 0) return [];
+
+  return validations.map(v => {
+    const value = resolveFieldPath(responseData, v.fieldPath);
+    let actualType: string;
+    if (value === undefined || value === null) {
+      actualType = 'null';
+    } else if (Array.isArray(value)) {
+      actualType = 'array';
+    } else {
+      actualType = typeof value;
+    }
+
+    return {
+      fieldPath: v.fieldPath,
+      expectedType: v.expectedType,
+      actualType,
+      actualValue: value,
+      passed: actualType === v.expectedType,
+    };
+  });
 }
 
 export interface ExecutionCallbacks {
@@ -125,14 +144,12 @@ export async function executeFlow(
     try {
       const ep = node.data.endpoint;
 
-      // Find incoming edges with mappings
       const incomingEdges = edges.filter(e => e.target === nodeId);
       let headers: Record<string, string> = { ...ep.headers, ...node.data.overrides?.headers };
       let body = node.data.overrides?.body || ep.body || '';
       let queryParams: Record<string, string> = { ...ep.queryParams, ...node.data.overrides?.queryParams };
       let url = ep.path;
 
-      // Apply mappings from all incoming edges
       for (const edge of incomingEdges) {
         const edgeData = edge.data as FlowEdgeData | undefined;
         if (edgeData?.mappings?.length && results.has(edge.source)) {
@@ -144,7 +161,6 @@ export async function executeFlow(
         }
       }
 
-      // Build final URL
       const cleanBase = baseUrl.replace(/\/$/, '');
       const cleanPath = url.startsWith('/') ? url : '/' + url;
       let finalUrl = cleanBase + cleanPath;
@@ -154,16 +170,11 @@ export async function executeFlow(
         finalUrl += '?' + qsEntries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
       }
 
-      // Set Content-Type if body exists
       if (body && !headers['Content-Type'] && !headers['content-type']) {
         headers['Content-Type'] = 'application/json';
       }
 
-      const fetchOptions: RequestInit = {
-        method: ep.method,
-        headers,
-      };
-
+      const fetchOptions: RequestInit = { method: ep.method, headers };
       if (['POST', 'PUT', 'PATCH'].includes(ep.method) && body) {
         fetchOptions.body = body;
       }
@@ -172,31 +183,64 @@ export async function executeFlow(
       const duration = Math.round(performance.now() - startTime);
 
       let responseBody: string;
+      let parsedResponse: unknown;
       const contentType = response.headers.get('content-type') || '';
       if (contentType.includes('application/json')) {
         const json = await response.json();
         responseBody = JSON.stringify(json, null, 2);
+        parsedResponse = json;
         results.set(nodeId, json);
       } else {
         responseBody = await response.text();
         try {
           const parsed = JSON.parse(responseBody);
+          parsedResponse = parsed;
           results.set(nodeId, parsed);
         } catch {
-          results.set(nodeId, { _text: responseBody });
+          parsedResponse = { _text: responseBody };
+          results.set(nodeId, parsedResponse);
         }
       }
 
       const responseHeaders: Record<string, string> = {};
       response.headers.forEach((v, k) => { responseHeaders[k] = v; });
 
+      // Status code validation
+      const expectedCodes = node.data.expectedStatusCodes;
+      const statusCodeValidation = expectedCodes && expectedCodes.length > 0
+        ? { expected: expectedCodes, actual: response.status, passed: expectedCodes.includes(response.status) }
+        : undefined;
+
+      // Field validations
+      const fieldValidationResults = validateFields(parsedResponse, node.data);
+
+      const allValidationsPassed = (
+        (!statusCodeValidation || statusCodeValidation.passed) &&
+        fieldValidationResults.every(r => r.passed)
+      );
+
+      const baseStatus = response.ok ? 'success' : 'error';
+      const finalStatus = allValidationsPassed ? baseStatus : 'error';
+
+      const errors: string[] = [];
+      if (!response.ok) errors.push(`HTTP ${response.status}`);
+      if (statusCodeValidation && !statusCodeValidation.passed) {
+        errors.push(`Status esperado [${statusCodeValidation.expected.join(', ')}], recebido ${statusCodeValidation.actual}`);
+      }
+      const failedFields = fieldValidationResults.filter(r => !r.passed);
+      if (failedFields.length > 0) {
+        errors.push(failedFields.map(f => `Campo "${f.fieldPath}": esperado ${f.expectedType}, recebido ${f.actualType}`).join('; '));
+      }
+
       callbacks.onNodeComplete(nodeId, {
-        status: response.ok ? 'success' : 'error',
+        status: finalStatus as 'success' | 'error',
         statusCode: response.status,
         responseBody,
         responseHeaders,
         duration,
-        error: response.ok ? undefined : `HTTP ${response.status}`,
+        error: errors.length > 0 ? errors.join(' | ') : undefined,
+        statusCodeValidation,
+        fieldValidationResults,
       });
     } catch (err) {
       const duration = Math.round(performance.now() - startTime);

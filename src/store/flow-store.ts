@@ -9,14 +9,12 @@ import {
   NodeChange,
   EdgeChange,
 } from 'reactflow';
-import { CollectionInfo, FlowNodeData, FlowEdgeData, NodeExecutionResult, DataMapping } from '@/types/api-flow';
+import { CollectionInfo, FlowNodeData, FlowEdgeData, NodeExecutionResult, DataMapping, FieldValidation } from '@/types/api-flow';
 
 interface FlowState {
-  // Collection
   collection: CollectionInfo | null;
   setCollection: (collection: CollectionInfo) => void;
 
-  // Nodes & edges
   nodes: Node<FlowNodeData>[];
   edges: Edge<FlowEdgeData>[];
   onNodesChange: (changes: NodeChange[]) => void;
@@ -24,22 +22,20 @@ interface FlowState {
   onConnect: (connection: Connection) => void;
   addEndpointNode: (endpointId: string, position: { x: number; y: number }) => void;
 
-  // Selection
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
   setSelectedNode: (id: string | null) => void;
   setSelectedEdge: (id: string | null) => void;
 
-  // Execution
   isExecuting: boolean;
   setExecuting: (v: boolean) => void;
   setNodeExecutionResult: (nodeId: string, result: NodeExecutionResult) => void;
   clearExecutionResults: () => void;
 
-  // Node overrides
   updateNodeOverrides: (nodeId: string, overrides: FlowNodeData['overrides']) => void;
+  updateExpectedStatusCodes: (nodeId: string, codes: number[]) => void;
+  updateFieldValidations: (nodeId: string, validations: FieldValidation[]) => void;
 
-  // Edge mappings
   updateEdgeMappings: (edgeId: string, mappings: DataMapping[]) => void;
 }
 
@@ -74,8 +70,6 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     if (!collection) return;
     const endpoint = collection.endpoints.find(e => e.id === endpointId);
     if (!endpoint) return;
-
-    // Don't add duplicates
     if (nodes.some(n => n.data.endpoint.id === endpointId)) return;
 
     const newNode: Node<FlowNodeData> = {
@@ -116,6 +110,22 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set({
       nodes: get().nodes.map(n =>
         n.id === nodeId ? { ...n, data: { ...n.data, overrides } } : n
+      ),
+    });
+  },
+
+  updateExpectedStatusCodes: (nodeId, codes) => {
+    set({
+      nodes: get().nodes.map(n =>
+        n.id === nodeId ? { ...n, data: { ...n.data, expectedStatusCodes: codes } } : n
+      ),
+    });
+  },
+
+  updateFieldValidations: (nodeId, validations) => {
+    set({
+      nodes: get().nodes.map(n =>
+        n.id === nodeId ? { ...n, data: { ...n.data, fieldValidations: validations } } : n
       ),
     });
   },
